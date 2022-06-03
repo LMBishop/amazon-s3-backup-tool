@@ -5,23 +5,41 @@ import os
 import sys
 import threading
 import readchar
+import math
 from tabulate import tabulate
 from datetime import datetime
 
+LINE_CLEAR = '\x1b[2K'
+
 class ProgressPercentage(object):
-    def __init__(self, filename):
+    def __init__(self, filename, count, total):
         self._filename = filename
+        self._count = str(count)
+        self._total = str(total)
         self._size = float(os.path.getsize(filename))
         self._seen_so_far = 0
         self._lock = threading.Lock()
 
     def __call__(self, bytes_amount):
         # To simplify, assume this is hooked up to a single filename
+        print(end=LINE_CLEAR)
         with self._lock:
             self._seen_so_far += bytes_amount
             percentage = (self._seen_so_far / self._size) * 100
-            sys.stdout.write("\r%s  %.2f%%" % (self._filename, percentage))
+            mibytes_seen_so_far = bytes_readout(self._seen_so_far)
+            mibytes_size = bytes_readout(self._size)
+            sys.stdout.write("\r[%s/%s] %s (%s/%s, %.2f%%)" % (self._count.rjust(len(self._total)), self._total, self._filename, mibytes_seen_so_far, mibytes_size, percentage))
             sys.stdout.flush()
+
+
+def bytes_readout(size_bytes):
+   if size_bytes == 0:
+       return "0 B"
+   size_name = ("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")
+   i = int(math.floor(math.log(size_bytes, 1024)))
+   p = math.pow(1024, i)
+   s = round(size_bytes / p)
+   return "%s %s" % (s, size_name[i])
 
 
 def query_key(question):
@@ -94,7 +112,8 @@ for dirpath, dirnames, filenames in os.walk(config['directory_name']):
             local_files.append(f"{relpath}/{file}")
 
 files_diff = list(filter(lambda x: x not in file_tree_set, local_files))
-print(f"{len(files_diff)} files to upload")
+total_size = sum(os.path.getsize(os.path.join(config['directory_name'], f)) for f in files_diff)
+print(f"{len(files_diff)} ({bytes_readout(total_size)}) files to upload")
 if(len(files_diff) > 0):
     while(True):
         key = query_key("Action? [V]iew, [U]pload, [Q]uit ")
@@ -102,30 +121,36 @@ if(len(files_diff) > 0):
         if key == 'v':
             tabulated_data = []
             for file in files_diff:
-                time = os.path.getmtime(os.path.join(config['directory_name'], file));
-                tabulated_data.append([file, datetime.utcfromtimestamp(time).strftime('%Y-%m-%d %H:%M:%S')])
+                true_file = os.path.join(config['directory_name'], file)
+                time = os.path.getmtime(true_file)
+                tabulated_data.append([file, bytes_readout(os.path.getsize(true_file)), datetime.utcfromtimestamp(time).strftime('%Y-%m-%d %H:%M:%S')])
 
-            print(tabulate(tabulated_data, headers=["File name", "Last modified"]))
+            print(tabulate(tabulated_data, headers=["File name", "Size", "Last modified"]))
         elif key == 'u':        
-            error = []    
+            error = []
+            count = 0
             for file in files_diff:
+                count += 1
                 true_file = os.path.join(config['directory_name'], file)
                 try:
                     s3.upload_file(true_file, config['bucket_name'], file,
-                        Callback=ProgressPercentage(true_file),
+                        Callback=ProgressPercentage(true_file, count, len(files_diff)),
                         ExtraArgs = {
                             'StorageClass': 'DEEP_ARCHIVE'
                         }
                     )
-                except botocore.exceptions.ClientError as e:
+                except Exception as e:
+                    print(end=LINE_CLEAR)
                     sys.stdout.write(f"\rUpload of {file} failed")
+                    if hasattr(e, 'response') and 'Error' in e.response and 'Code' in e.response['Error']:
+                        error.append([file, e.response['Error']['Code']])
+                    else:
+                        error.append([file, type(e).__name__])
+                finally:
                     print()
-                    error.append([file, e.response['Error']['Code']])
-                    continue
-                print()
             if (len(error) > 0):
-                print(f"{len(error)} files failed to upload")
                 print(tabulate(error, headers=["File name", "Error"]))
+                print(f"{len(error)} files failed to upload")
             os.remove(file_tree_location)
             break
         elif key == 'q':
