@@ -112,7 +112,10 @@ if(len(files_diff) > 0):
                 true_file = os.path.join(config['directory_name'], file)
                 try:
                     s3.upload_file(true_file, config['bucket_name'], file,
-                        Callback=ProgressPercentage(true_file)
+                        Callback=ProgressPercentage(true_file),
+                        ExtraArgs = {
+                            'StorageClass': 'DEEP_ARCHIVE'
+                        }
                     )
                 except botocore.exceptions.ClientError as e:
                     sys.stdout.write(f"\rUpload of {file} failed")
