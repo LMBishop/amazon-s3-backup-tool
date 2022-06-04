@@ -1,4 +1,0 @@
-print("alpha", end="\r")
-LINE_CLEAR = '\x1b[2K'
-print(end=LINE_CLEAR)
-print("beta")
